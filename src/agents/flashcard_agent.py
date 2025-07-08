@@ -1,6 +1,7 @@
-# flashcard_agent.py
+#  flashcard_agent.py
 
 import os
+import sys
 import tempfile
 import streamlit as st
 from typing import Optional, List, Dict
@@ -10,9 +11,22 @@ from docx import Document
 import json
 import random
 
+# Add src to Python path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.join(os.path.dirname(current_dir))
+if src_dir not in sys.path:
+    sys.path.append(src_dir)
+
+# Import FAISS database
+try:
+    from database.document_processor import DocumentProcessor
+except ImportError:
+    DocumentProcessor = None
+    print("⚠️ FAISS database not available - using Gemini-only mode")
+
 class FlashcardAgent:
     def __init__(self):
-        """Initialize the Flashcard Agent with Gemini API."""
+        """Initialize the Flashcard Agent with Gemini API and FAISS database."""
         self.api_key = os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment variables")
@@ -20,18 +34,16 @@ class FlashcardAgent:
         # Configure Gemini API
         genai.configure(api_key=self.api_key)
         
-        # Try to initialize with the best available model
+        # Initialize Gemini model
         try:
             self.model = genai.GenerativeModel('gemini-1.5-flash')
         except Exception:
             try:
-                # Fallback to other available models
                 self.model = genai.GenerativeModel('gemini-1.5-pro')
             except Exception:
                 try:
                     self.model = genai.GenerativeModel('gemini-pro')
                 except Exception:
-                    # Get list of available models and use the first generative one
                     available_models = genai.list_models()
                     generative_models = [
                         model for model in available_models 
@@ -42,6 +54,42 @@ class FlashcardAgent:
                         self.model = genai.GenerativeModel(model_name)
                     else:
                         raise ValueError("No suitable generative models available")
+        
+        # Initialize FAISS database (optional)
+        self.faiss_db = None
+        if DocumentProcessor:
+            try:
+                self.faiss_db = DocumentProcessor()
+                print("✅ FAISS database connected")
+            except Exception as e:
+                print(f"⚠️ FAISS database unavailable: {e}")
+                self.faiss_db = None
+        
+        # Define suggested course topics
+        self.suggested_topics = [
+            "Artificial Intelligence", "Machine Learning", "Deep Learning", "Neural Networks",
+            "Python Programming", "Data Structures", "Algorithms", "Object-Oriented Programming",
+            "Probability", "Statistics", "Linear Algebra", "Calculus",
+            "Database Systems", "SQL", "Data Science", "Big Data",
+            "Web Development", "HTML/CSS", "JavaScript", "React",
+            "Computer Networks", "Operating Systems", "Software Engineering",
+            "Cybersecurity", "Cryptography", "Information Security",
+            "Physics", "Chemistry", "Biology", "Mathematics",
+            "Economics", "Finance", "Marketing", "Management"
+        ]
+    
+    def search_course_content(self, topic: str) -> Optional[str]:
+        """Search for relevant content in FAISS database."""
+        if not self.faiss_db:
+            return None
+        
+        try:
+            # Search for content related to the topic
+            content = self.faiss_db.search_documents(topic, top_k=3)
+            return content
+        except Exception as e:
+            print(f"⚠️ FAISS search error: {e}")
+            return None
     
     def extract_text_from_pdf(self, file) -> str:
         """Extract text from PDF file."""
@@ -69,11 +117,9 @@ class FlashcardAgent:
         """Extract text from uploaded file based on file type."""
         file_type = uploaded_file.type
         
-        # Check file size (10MB limit)
         if uploaded_file.size > 10 * 1024 * 1024:
             raise Exception("File size exceeds 10MB limit")
         
-        # Create a temporary file
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             tmp_file.write(uploaded_file.read())
             tmp_file_path = tmp_file.name
@@ -82,7 +128,7 @@ class FlashcardAgent:
             if file_type == "application/pdf":
                 with open(tmp_file_path, 'rb') as file:
                     text = self.extract_text_from_pdf(file)
-            elif file_type == "application/vnd.openxmlformats-officedudlament.wordprocessingml.document":
+            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                 text = self.extract_text_from_docx(tmp_file_path)
             else:
                 raise Exception(f"Unsupported file type: {file_type}")
@@ -93,11 +139,10 @@ class FlashcardAgent:
             return text
         
         finally:
-            # Clean up temporary file
             if os.path.exists(tmp_file_path):
                 os.unlink(tmp_file_path)
     
-    def create_flashcard_prompt(self, text: str, num_cards: int, difficulty: str) -> str:
+    def create_flashcard_prompt(self, text: str, num_cards: int, difficulty: str, course_content: Optional[str] = None) -> str:
         """Create a detailed prompt for Gemini to generate flashcards."""
         
         difficulty_instructions = {
@@ -108,37 +153,51 @@ class FlashcardAgent:
         
         difficulty_instruction = difficulty_instructions.get(difficulty, difficulty_instructions["Intermediate"])
         
+        # Base prompt
         prompt = f"""
-        You are an expert educational content creator specializing in creating effective flashcards for students.
+You are an expert educational content creator specializing in creating effective flashcards for students.
+
+Please create {num_cards} high-quality flashcards using Term/Definition format.
+
+**Flashcard Requirements:**
+- Difficulty Level: {difficulty} - {difficulty_instruction}
+- Format: Term/Definition pairs
+- Each flashcard should test important concepts
+- Terms should be key concepts, important vocabulary, or significant ideas
+- Definitions should be clear, concise, and educational (2-4 sentences)
+- Make definitions standalone (don't reference "the document")
+
+**Output Format (STRICTLY FOLLOW THIS FORMAT):**
+FLASHCARD_1:
+TERM: [Key term or concept]
+DEFINITION: [Clear, educational definition]
+
+FLASHCARD_2:
+TERM: [Key term or concept]
+DEFINITION: [Clear, educational definition]
+
+[Continue for all {num_cards} flashcards...]
+
+"""
         
-        Please analyze the following document and create {num_cards} high-quality flashcards using Term/Definition format.
+        # Add course content if available from FAISS
+        if course_content:
+            prompt += f"""
+**Primary Course Content (Use as main reference):**
+{course_content}
+
+**Additional Context:**
+{text[:2000]}...
+
+Focus primarily on the course content above, and use the additional context to enhance understanding.
+"""
+        else:
+            prompt += f"""
+**Document Content:**
+{text}
+"""
         
-        **Flashcard Requirements:**
-        - Difficulty Level: {difficulty} - {difficulty_instruction}
-        - Format: Term/Definition pairs
-        - Each flashcard should test important concepts from the document
-        - Terms should be key concepts, important vocabulary, or significant ideas
-        - Definitions should be clear, concise, and educational (2-4 sentences)
-        - Avoid overly simple or overly complex terms based on difficulty level
-        - Ensure flashcards cover different sections/topics from the document
-        - Make definitions standalone (don't reference "the document" or "as mentioned")
-        
-        **Output Format (STRICTLY FOLLOW THIS FORMAT):**
-        FLASHCARD_1:
-        TERM: [Key term or concept]
-        DEFINITION: [Clear, educational definition]
-        
-        FLASHCARD_2:
-        TERM: [Key term or concept]
-        DEFINITION: [Clear, educational definition]
-        
-        [Continue for all {num_cards} flashcards...]
-        
-        **Document Content:**
-        {text}
-        
-        Please generate exactly {num_cards} flashcards now:
-        """
+        prompt += f"\nPlease generate exactly {num_cards} flashcards now:"
         
         return prompt
     
@@ -165,10 +224,9 @@ class FlashcardAgent:
         flashcards = []
         
         try:
-            # Split response into individual flashcards
             flashcard_blocks = response_text.split("FLASHCARD_")
             
-            for block in flashcard_blocks[1:]:  # Skip the first empty split
+            for block in flashcard_blocks[1:]:
                 lines = block.strip().split("\n")
                 term = ""
                 definition = ""
@@ -180,7 +238,6 @@ class FlashcardAgent:
                     elif line.startswith("DEFINITION:"):
                         definition = line.replace("DEFINITION:", "").strip()
                     elif definition and not line.startswith("FLASHCARD_"):
-                        # Continue definition on next line
                         definition += " " + line
                 
                 if term and definition:
@@ -194,6 +251,89 @@ class FlashcardAgent:
         except Exception as e:
             raise Exception(f"Error parsing flashcards: {str(e)}")
     
+    def generate_topic_flashcards(self, topic: str, num_cards: int, difficulty: str, shuffle: bool = False) -> List[Dict[str, str]]:
+        """Generate flashcards for a specific topic using FAISS database."""
+        try:
+            # Search for course content
+            st.info("🔍 Searching course database...")
+            course_content = self.search_course_content(topic)
+            
+            if course_content:
+                st.success("✅ Found relevant course content!")
+                
+                # Create prompt with course content
+                prompt = f"""
+You are an expert educational content creator. Create {num_cards} flashcards about "{topic}".
+
+**Difficulty Level:** {difficulty}
+**Format:** Term/Definition pairs
+
+**Course Content:**
+{course_content}
+
+**Output Format:**
+FLASHCARD_1:
+TERM: [Key term or concept]
+DEFINITION: [Clear, educational definition]
+
+FLASHCARD_2:
+TERM: [Key term or concept]  
+DEFINITION: [Clear, educational definition]
+
+Generate exactly {num_cards} flashcards focusing on the most important concepts from the course content:
+"""
+            else:
+                st.info("📚 No course content found, using general knowledge...")
+                
+                # Fallback to general topic flashcards
+                difficulty_instructions = {
+                    "Basic": "Focus on simple, fundamental concepts and basic definitions. Use clear, straightforward language.",
+                    "Intermediate": "Include more detailed concepts and relationships. Use moderate academic vocabulary.",
+                    "Advanced": "Focus on complex ideas, nuanced concepts, and advanced terminology. Use sophisticated academic language."
+                }
+                
+                difficulty_instruction = difficulty_instructions.get(difficulty, difficulty_instructions["Intermediate"])
+                
+                prompt = f"""
+You are an expert educational content creator. Create {num_cards} flashcards about "{topic}".
+
+**Difficulty Level:** {difficulty} - {difficulty_instruction}
+**Topic:** {topic}
+
+Focus on the most important concepts, terms, and definitions related to {topic}.
+Create comprehensive flashcards that cover key vocabulary, fundamental principles, and important concepts.
+
+**Output Format:**
+FLASHCARD_1:
+TERM: [Key term or concept]
+DEFINITION: [Clear, educational definition]
+
+FLASHCARD_2:
+TERM: [Key term or concept]
+DEFINITION: [Clear, educational definition]
+
+Generate exactly {num_cards} flashcards covering the essential knowledge for {topic}:
+"""
+            
+            # Generate flashcards
+            st.info("✨ Generating flashcards...")
+            response = self.generate_flashcards_with_gemini(prompt)
+            
+            # Parse flashcards
+            flashcards = self.parse_flashcards(response)
+            
+            if not flashcards:
+                raise Exception("No valid flashcards could be generated")
+            
+            # Shuffle if requested
+            if shuffle:
+                flashcards = self.shuffle_flashcards(flashcards)
+            
+            return flashcards
+        
+        except Exception as e:
+            raise Exception(f"Topic flashcard generation failed: {str(e)}")
+    
     def shuffle_flashcards(self, flashcards: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Shuffle the order of flashcards."""
         shuffled = flashcards.copy()
@@ -203,30 +343,37 @@ class FlashcardAgent:
     def generate_flashcards(self, uploaded_file, num_cards: int, difficulty: str, shuffle: bool = False) -> List[Dict[str, str]]:
         """Main method to generate flashcards from uploaded document."""
         try:
-            # Step 1: Extract text from document
+            # Extract text from document
             st.info("📄 Extracting text from document...")
             text = self.extract_text_from_file(uploaded_file)
             
-            # Check if text is sufficient for flashcard generation
             if len(text.split()) < 100:
                 raise Exception("Document too short to generate meaningful flashcards (minimum 100 words required)")
             
-            # Step 2: Create flashcard prompt
-            st.info("🤖 Preparing flashcard generation request...")
-            prompt = self.create_flashcard_prompt(text, num_cards, difficulty)
+            # Try to identify topic from document
+            topic_keywords = text[:500].split()[:10]  # First 10 words as topic hint
+            topic_hint = " ".join(topic_keywords)
             
-            # Step 3: Generate flashcards using Gemini
+            # Search for related course content
+            st.info("🔍 Searching for related course content...")
+            course_content = self.search_course_content(topic_hint)
+            
+            # Create flashcard prompt
+            st.info("🤖 Preparing flashcard generation...")
+            prompt = self.create_flashcard_prompt(text, num_cards, difficulty, course_content)
+            
+            # Generate flashcards
             st.info("✨ Generating intelligent flashcards...")
             response = self.generate_flashcards_with_gemini(prompt)
             
-            # Step 4: Parse flashcards
+            # Parse flashcards
             st.info("📝 Processing flashcards...")
             flashcards = self.parse_flashcards(response)
             
             if not flashcards:
                 raise Exception("No valid flashcards could be generated from the document")
             
-            # Step 5: Shuffle if requested
+            # Shuffle if requested
             if shuffle:
                 flashcards = self.shuffle_flashcards(flashcards)
             
@@ -235,15 +382,20 @@ class FlashcardAgent:
         except Exception as e:
             raise Exception(f"Flashcard generation failed: {str(e)}")
     
-    def format_flashcards_for_display(self, flashcards: List[Dict[str, str]], filename: str) -> str:
+    def format_flashcards_for_display(self, flashcards: List[Dict[str, str]], source: str = "Topic") -> str:
         """Format flashcards for display in the UI."""
         if not flashcards:
             return "No flashcards generated."
         
+        # Check if using course content
+        source_info = f"**Source:** {source}"
+        if self.faiss_db and source == "Topic":
+            source_info += " (Enhanced with course database)"
+        
         formatted = f"""
 ### 🃏 Generated Flashcards
 
-**Source:** {filename}  
+{source_info}  
 **Total Cards:** {len(flashcards)}  
 **Generated:** Now
 
@@ -262,7 +414,7 @@ class FlashcardAgent:
         formatted += "\n*Generated by EduMate AI Assistant*"
         return formatted.strip()
     
-    def format_flashcards_for_print(self, flashcards: List[Dict[str, str]], filename: str) -> str:
+    def format_flashcards_for_print(self, flashcards: List[Dict[str, str]], source: str = "Topic") -> str:
         """Format flashcards for print-friendly download."""
         if not flashcards:
             return "No flashcards to export."
@@ -271,9 +423,9 @@ class FlashcardAgent:
 EDUMATE FLASHCARDS
 ==================
 
-Source Document: {filename}
+Source: {source}
 Total Cards: {len(flashcards)}
-Generated: {st.session_state.get('current_time', 'Now')}
+Generated: Now
 
 """
         
@@ -295,3 +447,160 @@ Study tip: Cover the definitions and test your knowledge!
 """
         
         return print_format.strip()
+    
+    def render_flashcard_interface(self):
+        """Render the complete flashcard interface with tabs."""
+        st.title("🃏 Flashcard Generator")
+        st.markdown("Generate intelligent flashcards from documents or topics using AI")
+        
+        # Create tabs
+        tab1, tab2 = st.tabs(["📄 Upload Document", "📚 Enter Topic"])
+        
+        # Shared settings
+        with st.sidebar:
+            st.header("⚙️ Flashcard Settings")
+            num_cards = st.slider("Number of Flashcards", min_value=5, max_value=50, value=10)
+            difficulty = st.selectbox("Difficulty Level", ["Basic", "Intermediate", "Advanced"])
+            shuffle = st.checkbox("Shuffle Cards", value=False)
+        
+        # Tab 1: Document Upload
+        with tab1:
+            st.header("📄 Generate from Document")
+            st.markdown("Upload a PDF or Word document to generate flashcards")
+            
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=['pdf', 'docx'],
+                help="Upload PDF or Word documents (max 10MB)"
+            )
+            
+            if uploaded_file is not None:
+                st.success(f"✅ File uploaded: {uploaded_file.name}")
+                
+                if st.button("🚀 Generate Flashcards from Document", key="doc_generate"):
+                    try:
+                        with st.spinner("Processing document..."):
+                            flashcards = self.generate_flashcards(
+                                uploaded_file, num_cards, difficulty, shuffle
+                            )
+                        
+                        # Store in session state
+                        st.session_state.flashcards = flashcards
+                        st.session_state.flashcard_source = uploaded_file.name
+                        
+                        st.success(f"✅ Generated {len(flashcards)} flashcards!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+        
+        # Tab 2: Topic Input
+        with tab2:
+            st.header("📚 Generate from Topic")
+            st.markdown("Enter a topic to generate flashcards using course content and general knowledge")
+            
+            # Topic input with suggestions
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                topic = st.text_input(
+                    "Enter Topic",
+                    placeholder="e.g., Machine Learning, Python Programming, Statistics...",
+                    help="Enter any academic topic or subject"
+                )
+            
+            with col2:
+                st.markdown("**Suggested Topics:**")
+                selected_topic = st.selectbox(
+                    "Quick Select",
+                    [""] + self.suggested_topics,
+                    help="Select from common course topics"
+                )
+                
+                if selected_topic and selected_topic != topic:
+                    topic = selected_topic
+                    st.rerun()
+            
+            # Display some suggested topics as buttons
+            st.markdown("**Popular Topics:**")
+            topic_cols = st.columns(4)
+            popular_topics = ["AI", "Python", "Statistics", "Database"]
+            
+            for i, pop_topic in enumerate(popular_topics):
+                with topic_cols[i]:
+                    if st.button(pop_topic, key=f"topic_{pop_topic}"):
+                        topic = pop_topic
+                        st.rerun()
+            
+            if topic:
+                st.info(f"🎯 Topic selected: **{topic}**")
+                
+                if st.button("🚀 Generate Flashcards from Topic", key="topic_generate"):
+                    try:
+                        with st.spinner(f"Generating flashcards for {topic}..."):
+                            flashcards = self.generate_topic_flashcards(
+                                topic, num_cards, difficulty, shuffle
+                            )
+                        
+                        # Store in session state
+                        st.session_state.flashcards = flashcards
+                        st.session_state.flashcard_source = topic
+                        
+                        st.success(f"✅ Generated {len(flashcards)} flashcards for {topic}!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+        
+        # Display generated flashcards
+        if 'flashcards' in st.session_state and st.session_state.flashcards:
+            st.divider()
+            
+            # Display options
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                st.subheader("📋 Generated Flashcards")
+            
+            with col2:
+                if st.button("🔄 Shuffle Cards", key="shuffle_display"):
+                    st.session_state.flashcards = self.shuffle_flashcards(st.session_state.flashcards)
+                    st.rerun()
+            
+            with col3:
+                # Download button
+                flashcard_text = self.format_flashcards_for_print(
+                    st.session_state.flashcards, 
+                    st.session_state.get('flashcard_source', 'Unknown')
+                )
+                st.download_button(
+                    "📥 Download",
+                    data=flashcard_text,
+                    file_name=f"flashcards_{st.session_state.get('flashcard_source', 'topic')}.txt",
+                    mime="text/plain"
+                )
+            
+            # Display flashcards
+            formatted_cards = self.format_flashcards_for_display(
+                st.session_state.flashcards,
+                st.session_state.get('flashcard_source', 'Topic')
+            )
+            st.markdown(formatted_cards)
+
+
+# Main execution function for Streamlit
+def main():
+    """Main function to run the flashcard agent."""
+    try:
+        agent = FlashcardAgent()
+        agent.render_flashcard_interface()
+        
+    except ValueError as e:
+        st.error(f"❌ Configuration Error: {str(e)}")
+        st.info("Please ensure your GOOGLE_API_KEY is set in the environment variables.")
+    
+    except Exception as e:
+        st.error(f"❌ Application Error: {str(e)}")
+        st.info("Please check your configuration and try again.")
+
+
+if __name__ == "__main__":
+    main()

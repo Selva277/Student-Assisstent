@@ -1,13 +1,41 @@
-#staring integration code
+# main.py
 import streamlit as st
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Add the src directory to the Python path
+current_dir = Path(__file__).parent
+src_dir = current_dir / "src"
+sys.path.insert(0, str(src_dir))
+
+# Import authentication and agents
+from src.auth.auth_manager import AuthManager
 from src.agents.summarizer_agent import SummarizerAgent
 from src.agents.flashcard_agent import FlashcardAgent
 from src.agents.planner_agent import PlannerAgent
 from src.agents.quiz_agent import QuizAgent
 from src.agents.tracker_agent import TrackerAgent
 
+def display_flashcards(flashcards, source, flashcard_agent):
+    """Helper function to display and format flashcards"""
+    if flashcards:
+        st.success(f"✅ Generated {len(flashcards)} flashcards successfully!")
+        for i, card in enumerate(flashcards, 1):
+            with st.container():
+                st.markdown(f"### 🃏 Card {i}")
+                st.markdown(f"**Term:** {card['term']}")
+                st.markdown(f"**Definition:** {card['definition']}")
+                st.markdown("---")
+        
+        print_format = flashcard_agent.format_flashcards_for_print(flashcards, source)
+        st.download_button(
+            label="🖨️ Download Print-Friendly Version",
+            data=print_format,
+            file_name=f"flashcards_{source.replace(' ', '_')}.txt",
+            mime="text/plain"
+        )
 # Load environment variables
 load_dotenv()
 
@@ -39,6 +67,40 @@ st.markdown("""
         text-align: center;
         margin-bottom: 2rem;
         box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+    }
+    
+    /* Authentication styling */
+    .auth-container {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        margin: 2rem auto;
+        max-width: 500px;
+    }
+    
+    .auth-header {
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    
+    .auth-header h2 {
+        color: #64748b;
+        margin-bottom: 0.5rem;
+    }
+    
+    .auth-header p {
+        color: #64748b;
+        margin: 0;
+    }
+    
+    /* Profile form styling */
+    .profile-container {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        margin: 1rem 0;
     }
     
     /* Tab styling */
@@ -198,12 +260,254 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def main():
-    # Main header
-    st.markdown("<h1 class='main-header'>🎓 EduMate - AI Student Assistant</h1>", unsafe_allow_html=True)
+def check_authentication():
+    """Check if user is authenticated and return user data"""
+    auth_manager = AuthManager()
+    
+    # Initialize session state
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'user_data' not in st.session_state:
+        st.session_state.user_data = None
+    
+    # Check for remember me token if not authenticated
+    if not st.session_state.authenticated and 'remember_token' in st.session_state:
+        token = st.session_state.remember_token
+        result = auth_manager.validate_remember_token(token)
+        
+        if result['success']:
+            st.session_state.authenticated = True
+            st.session_state.user_data = {
+                'user_id': result['user_id'],
+                'email': result['email'],
+                'is_profile_complete': result['is_profile_complete']
+            }
+    
+    return st.session_state.authenticated, st.session_state.user_data
+
+def show_login_page():
+    """Display login/signup interface"""
+    auth_manager = AuthManager()
+    
+    st.markdown("<div class='auth-container'>", unsafe_allow_html=True)
+    
+    # Header
+    st.markdown("""
+        <div class='auth-header'>
+            <h1>🎓 Welcome to EduMate</h1>
+            <p>Your AI-powered learning companion</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Login/Signup tabs
+    auth_tab1, auth_tab2 = st.tabs(["🔐 Login", "📝 Sign Up"])
+    
+    with auth_tab1:
+        st.markdown("### Login to Your Account")
+        
+        with st.form("login_form"):
+            email = st.text_input("📧 Email Address", placeholder="your.email@example.com")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+            remember_me = st.checkbox("Remember me for 30 days")
+            
+            login_btn = st.form_submit_button("🚀 Login", type="primary", use_container_width=True)
+            
+            if login_btn:
+                if email and password:
+                    result = auth_manager.login_user(email, password)
+                    
+                    if result['success']:
+                        st.session_state.authenticated = True
+                        st.session_state.user_data = {
+                            'user_id': result['user_id'],
+                            'email': result['email'],
+                            'is_profile_complete': result['is_profile_complete']
+                        }
+                        
+                        # Create remember token if requested
+                        if remember_me:
+                            token = auth_manager.create_remember_token(result['user_id'])
+                            st.session_state.remember_token = token
+                        
+                        st.success("✅ Login successful!")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {result['message']}")
+                else:
+                    st.error("❌ Please fill in all fields")
+    
+    with auth_tab2:
+        st.markdown("### Create New Account")
+        
+        with st.form("signup_form"):
+            new_email = st.text_input("📧 Email Address", placeholder="your.email@example.com", key="signup_email")
+            new_password = st.text_input("🔒 Password", type="password", placeholder="Create a strong password", key="signup_password")
+            confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="Confirm your password")
+            
+            signup_btn = st.form_submit_button("📝 Create Account", type="primary", use_container_width=True)
+            
+            if signup_btn:
+                if new_email and new_password and confirm_password:
+                    if new_password != confirm_password:
+                        st.error("❌ Passwords do not match!")
+                    elif len(new_password) < 6:
+                        st.error("❌ Password must be at least 6 characters long!")
+                    else:
+                        result = auth_manager.register_user(new_email, new_password)
+                        
+                        if result['success']:
+                            st.success("✅ Account created successfully! Please login.")
+                        else:
+                            st.error(f"❌ {result['message']}")
+                else:
+                    st.error("❌ Please fill in all fields")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def show_profile_setup():
+    """Display student profile setup form"""
+    auth_manager = AuthManager()
+    user_data = st.session_state.user_data
+    
+    st.markdown("<div class='profile-container'>", unsafe_allow_html=True)
+    
+    # Header
+    st.markdown("### 👨‍🎓 Complete Your Student Profile")
+    st.markdown("Help us personalize your learning experience!")
+    
+    # Check if profile already exists
+    existing_profile = auth_manager.get_student_profile(user_data['user_id'])
+    
+    # Pre-fill form if profile exists
+    default_values = {}
+    if existing_profile['success']:
+        default_values = existing_profile['profile']
+    
+    with st.form("profile_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            name = st.text_input(
+                "👤 Full Name", 
+                value=default_values.get('name', ''),
+                placeholder="Enter your full name"
+            )
+            
+            year = st.selectbox(
+                "📚 Academic Year",
+                options=[1, 2, 3, 4],
+                index=default_values.get('year', 1) - 1 if default_values.get('year') else 0
+            )
+            
+            course = st.text_input(
+                "🎓 Course/Major", 
+                value=default_values.get('course', ''),
+                placeholder="e.g., Computer Science, Engineering"
+            )
+            
+            learning_style = st.selectbox(
+                "📖 Learning Style",
+                options=["Visual", "Auditory", "Kinesthetic", "Reading/Writing", "Mixed"],
+                index=0 if not default_values.get('learning_style') else 
+                      ["Visual", "Auditory", "Kinesthetic", "Reading/Writing", "Mixed"].index(default_values.get('learning_style', 'Visual'))
+            )
+        
+        with col2:
+            interests = st.text_area(
+                "🌟 Interests", 
+                value=default_values.get('interests', ''),
+                placeholder="What subjects or topics interest you?",
+                height=100
+            )
+            
+            goals = st.text_area(
+                "🎯 Academic Goals", 
+                value=default_values.get('goals', ''),
+                placeholder="What do you want to achieve?",
+                height=100
+            )
+            
+            hobbies = st.text_area(
+                "🎨 Hobbies", 
+                value=default_values.get('hobbies', ''),
+                placeholder="What do you like to do in your free time?",
+                height=100
+            )
+            
+            current_skills = st.text_area(
+                "🛠️ Current Skills", 
+                value=default_values.get('current_skills', ''),
+                placeholder="What skills do you currently have?",
+                height=100
+            )
+        
+        # Submit button
+        save_profile_btn = st.form_submit_button("💾 Save Profile", type="primary", use_container_width=True)
+        
+        if save_profile_btn:
+            if name and course and interests and goals:
+                profile_data = {
+                    'name': name,
+                    'year': year,
+                    'course': course,
+                    'interests': interests,
+                    'goals': goals,
+                    'hobbies': hobbies,
+                    'learning_style': learning_style,
+                    'current_skills': current_skills
+                }
+                
+                result = auth_manager.save_student_profile(user_data['user_id'], profile_data)
+                
+                if result['success']:
+                    st.session_state.user_data['is_profile_complete'] = True
+                    st.success("✅ Profile saved successfully!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result['message']}")
+            else:
+                st.error("❌ Please fill in required fields: Name, Course, Interests, and Goals")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def show_main_application():
+    """Display the main EduMate application"""
+    user_data = st.session_state.user_data
+    auth_manager = AuthManager()
+    
+    # Get user profile for personalization
+    profile_result = auth_manager.get_student_profile(user_data['user_id'])
+    user_profile = profile_result.get('profile', {}) if profile_result['success'] else {}
+    
+    # Main header with personalization
+    user_name = user_profile.get('name', user_data['email'].split('@')[0])
+    st.markdown(f"<h1 class='main-header'>🎓 Welcome back, {user_name}!</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #64748b; font-size: 1.2rem; margin-bottom: 2rem;'>Your personalized AI companion for academic success</p>", unsafe_allow_html=True)
     
-    # Create tabs - Removed "Coming Soon" tab
+    # Sidebar with user info and logout
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 👤 Your Profile")
+        if user_profile:
+            st.markdown(f"**Name:** {user_profile.get('name', 'N/A')}")
+            st.markdown(f"**Course:** {user_profile.get('course', 'N/A')}")
+            st.markdown(f"**Year:** {user_profile.get('year', 'N/A')}")
+            st.markdown(f"**Learning Style:** {user_profile.get('learning_style', 'N/A')}")
+        
+        st.markdown("---")
+        
+        if st.button("⚙️ Edit Profile", type="secondary", use_container_width=True):
+            # Mark profile as incomplete to show profile page
+            st.session_state.user_data['is_profile_complete'] = False
+            st.rerun()
+        
+        if st.button("🚪 Logout", type="secondary", use_container_width=True):
+            auth_manager.logout_user(user_data['user_id'])
+            st.success("✅ Logged out successfully!")
+            st.rerun()
+
+    
+    # Create tabs for main application
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📅 Study Planner", 
         "🃏 Flashcard Generator", 
@@ -221,9 +525,13 @@ def main():
         with col1:
             st.markdown("### Learning Goals & Preferences")
             
+            # Pre-fill with user profile data
+            default_topic = user_profile.get('interests', '').split(',')[0].strip() if user_profile.get('interests') else ''
+            
             # Topic/Goal input
             learning_topic = st.text_input(
                 "📚 Learning Topic/Goal",
+                value=default_topic,
                 placeholder="e.g., Data Science, AI, Machine Learning, Web Development",
                 help="Enter what you want to learn"
             )
@@ -251,11 +559,19 @@ def main():
                 help="What's your current level in this topic?"
             )
             
-            # Learning style
+            # Learning style - pre-filled from profile
+            profile_learning_style = user_profile.get('learning_style', 'Mixed approach')
+            learning_style_options = ["Theory-focused", "Hands-on/Project-based", "Mixed approach"]
+            learning_style_index = 2  # Default to Mixed approach
+            if profile_learning_style in ["Visual", "Reading/Writing"]:
+                learning_style_index = 0
+            elif profile_learning_style in ["Kinesthetic", "Auditory"]:
+                learning_style_index = 1
+            
             learning_style = st.selectbox(
                 "📖 Preferred Learning Style",
-                ["Theory-focused", "Hands-on/Project-based", "Mixed approach"],
-                index=2,
+                learning_style_options,
+                index=learning_style_index,
                 help="How do you prefer to learn?"
             )
             
@@ -283,19 +599,20 @@ def main():
                         st.write(f"**{key}:** {value}")
                 
                 # Process and display study plan
-                if 'generate_plan_btn' in locals() and generate_plan_btn:
+                if generate_plan_btn:
                     try:
                         with st.spinner("🔄 Creating your personalized study plan..."):
                             # Initialize planner agent
                             planner = PlannerAgent()
                             
-                            # Generate study plan
+                            # Generate study plan with user profile context
                             study_plan = planner.create_study_plan(
                                 learning_topic,
                                 study_duration,
                                 daily_study_time,
                                 current_level,
-                                learning_style
+                                learning_style,
+                                user_profile  # Pass user profile for personalization
                             )
                             
                             # Store the study plan in session state for tracker
@@ -334,134 +651,113 @@ def main():
                     st.markdown("**Personalized:** Based on your time, level, and learning style")
                     st.markdown("</div>", unsafe_allow_html=True)
     
+    # Include all other tabs (flashcard, summarizer, quiz, tracker) - keeping the same structure as original
     with tab2:
-        st.markdown("<div class='tab-header'><h2>🃏 Flashcard Generator</h2><p>Transform your documents into study flashcards</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='tab-header'><h2>🃏 Flashcard Generator</h2><p>Transform your documents or topics into study flashcards</p></div>", unsafe_allow_html=True)
         
-        # Create two columns for layout
         col1, col2 = st.columns([1, 1.5])
         
         with col1:
-            st.markdown("### Upload & Options")
+            doc_tab, topic_tab = st.tabs(["📄 Document", "📚 Topic"])
             
-            # File upload section
-            with st.container():
-                st.markdown("<div class='upload-section'>", unsafe_allow_html=True)
+            with doc_tab:
+                st.markdown("### Upload Document")
                 flashcard_file = st.file_uploader(
                     "Choose a document for flashcards",
                     type=['pdf', 'docx'],
                     help="Upload PDF or DOCX files (max 10MB)",
                     key="flashcard_uploader"
                 )
-                st.markdown("</div>", unsafe_allow_html=True)
+                
+                if flashcard_file:
+                    st.markdown("### Flashcard Options")
+                    num_cards = st.number_input(
+                        "Number of Flashcards",
+                        min_value=1,
+                        max_value=50,
+                        value=10
+                    )
+                    difficulty = st.selectbox(
+                        "Difficulty Level",
+                        ["Basic", "Intermediate", "Advanced"],
+                        index=1
+                    )
+                    shuffle_cards = st.checkbox("🔀 Shuffle flashcards")
+                    generate_doc_btn = st.button("🃏 Generate Document Flashcards", type="primary", use_container_width=True)
             
-            # Flashcard options
-            if flashcard_file:
-                st.markdown("### Flashcard Options")
-                
-                num_cards = st.number_input(
-                    "Number of Flashcards",
-                    min_value=1,
-                    max_value=50,
-                    value=10,
-                    help="How many flashcards do you want to generate?"
+            with topic_tab:
+                st.markdown("### Enter Topic")
+                topic = st.text_input(
+                    "📚 Topic",
+                    placeholder="e.g., Machine Learning, Python Programming",
+                    help="Enter the topic for flashcard generation"
                 )
+                suggested_topics = ["Artificial Intelligence", "Python Programming", "Statistics", "Database"]
+                st.markdown("**Suggested Topics:**")
+                topic_cols = st.columns(4)
+                for i, pop_topic in enumerate(suggested_topics):
+                    with topic_cols[i]:
+                        if st.button(pop_topic, key=f"topic_{pop_topic}"):
+                            topic = pop_topic
+                            st.rerun()
                 
-                difficulty = st.selectbox(
-                    "Difficulty Level",
-                    ["Basic", "Intermediate", "Advanced"],
-                    index=1,
-                    help="Choose the complexity level for your flashcards"
-                )
-                
-                st.markdown("### Study Options")
-                
-                shuffle_cards = st.checkbox(
-                    "🔀 Shuffle flashcards",
-                    help="Randomize the order of flashcards for better learning"
-                )
-                
-                # Generate flashcards button
-                generate_flashcards_btn = st.button("🃏 Generate Flashcards", type="primary", use_container_width=True)
+                if topic:
+                    st.markdown("### Flashcard Options")
+                    num_cards_topic = st.number_input(
+                        "Number of Flashcards",
+                        min_value=1,
+                        max_value=50,
+                        value=10,
+                        key="num_cards_topic"
+                    )
+                    difficulty_topic = st.selectbox(
+                        "Difficulty Level",
+                        ["Basic", "Intermediate", "Advanced"],
+                        index=1,
+                        key="difficulty_topic"
+                    )
+                    shuffle_cards_topic = st.checkbox("🔀 Shuffle flashcards", key="shuffle_topic")
+                    generate_topic_btn = st.button("🃏 Generate Topic Flashcards", type="primary", use_container_width=True)
         
         with col2:
             st.markdown("### Generated Flashcards")
-            
-            # Flashcards display container
             flashcards_container = st.container()
             
-            if flashcard_file:
-                # Display file info
-                file_details = {
-                    "Filename": flashcard_file.name,
-                    "File Type": flashcard_file.type,
-                    "File Size": f"{flashcard_file.size / 1024:.2f} KB"
-                }
-                
-                with st.expander("📋 File Details"):
-                    for key, value in file_details.items():
-                        st.write(f"**{key}:** {value}")
-                
-                # Process and display flashcards
-                if 'generate_flashcards_btn' in locals() and generate_flashcards_btn:
+            with flashcards_container:
+                st.markdown("<div class='summary-container'>", unsafe_allow_html=True)
+                if flashcard_file and 'generate_doc_btn' in locals() and generate_doc_btn:
                     try:
-                        with st.spinner("🔄 Processing document and generating flashcards..."):
-                            # Initialize flashcard agent
+                        with st.spinner("🔄 Generating flashcards from document..."):
                             flashcard_agent = FlashcardAgent()
-                            
-                            # Generate flashcards
                             flashcards = flashcard_agent.generate_flashcards(
                                 flashcard_file, 
                                 num_cards, 
                                 difficulty, 
                                 shuffle_cards
                             )
-                            
-                            # Display flashcards
-                            with flashcards_container:
-                                if flashcards:
-                                    st.markdown("<div class='summary-container'>", unsafe_allow_html=True)
-                                    
-                                    # Display count and info
-                                    st.success(f"✅ Generated {len(flashcards)} flashcards successfully!")
-                                    
-                                    # Display flashcards
-                                    for i, card in enumerate(flashcards, 1):
-                                        with st.container():
-                                            st.markdown(f"### 🃏 Card {i}")
-                                            st.markdown(f"**Term:** {card['term']}")
-                                            st.markdown(f"**Definition:** {card['definition']}")
-                                            st.markdown("---")
-                                    
-                                    st.markdown("</div>", unsafe_allow_html=True)
-                                    
-                                    # Download button
-                                    print_format = flashcard_agent.format_flashcards_for_print(
-                                        flashcards, 
-                                        flashcard_file.name
-                                    )
-                                    
-                                    st.download_button(
-                                        label="🖨️ Download Print-Friendly Version",
-                                        data=print_format,
-                                        file_name=f"flashcards_{flashcard_file.name.split('.')[0]}.txt",
-                                        mime="text/plain"
-                                    )
-                                else:
-                                    st.warning("⚠️ No flashcards were generated. Please try with a different document.")
-                                    
+                            display_flashcards(flashcards, flashcard_file.name, flashcard_agent)
                     except Exception as e:
                         st.error(f"❌ Error generating flashcards: {str(e)}")
-                        st.info("Please try uploading the document again or contact support if the issue persists.")
-            
-            else:
-                with flashcards_container:
-                    st.markdown("<div class='summary-container'>", unsafe_allow_html=True)
-                    st.info("👆 Upload a document to generate flashcards!")
-                    st.markdown("**Supported formats:** PDF, DOCX")
-                    st.markdown("**Max file size:** 10MB")
-                    st.markdown("**Features:** Term/Definition pairs, Multiple difficulty levels, Shuffle option")
-                    st.markdown("</div>", unsafe_allow_html=True)
-    
+                
+                elif topic and 'generate_topic_btn' in locals() and generate_topic_btn:
+                    try:
+                        with st.spinner("🔄 Generating flashcards from topic..."):
+                            flashcard_agent = FlashcardAgent()
+                            flashcards = flashcard_agent.generate_topic_flashcards(
+                                topic, 
+                                num_cards_topic, 
+                                difficulty_topic, 
+                                shuffle_cards_topic
+                            )
+                            display_flashcards(flashcards, topic, flashcard_agent)
+                    except Exception as e:
+                        st.error(f"❌ Error generating flashcards: {str(e)}")
+                
+                else:
+                    st.info("👆 Upload a document or enter a topic to get started!")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+# ...rest of existing code...
     with tab3:
         st.markdown("<div class='tab-header'><h2>📄 Document Summarizer</h2><p>Upload your documents and get intelligent summaries</p></div>", unsafe_allow_html=True)
         
@@ -785,4 +1081,11 @@ def main():
     
 
 if __name__ == "__main__":
-    main()
+    authenticated, user_data = check_authentication()
+    
+    if not authenticated:
+        show_login_page()
+    elif not user_data.get('is_profile_complete', False):
+        show_profile_setup()
+    else:
+        show_main_application()
