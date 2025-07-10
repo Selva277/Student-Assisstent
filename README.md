@@ -1,4 +1,4 @@
----
+
 
 # 🎓 EduMate AI – Your Personal AI Tutor
 
