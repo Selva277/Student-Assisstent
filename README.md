@@ -59,12 +59,18 @@
      ```bash
      streamlit run app.py
      ```
+   * For **Flask**:
+
+     ```bash
+     python app.py
+     ```
 
 5. **Access the App**
 
    ```
    http://localhost:8501 (Streamlit)
-   
+   or
+   http://localhost:5000 (Flask)
    ```
 
 ---
@@ -101,8 +107,4 @@
 
 ---
 
-Let me know if you’d like help writing:
 
-* a **sample `requirements.txt`**
-* **API usage examples**
-* or a **setup guide for Gemini API credentials**.
